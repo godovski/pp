@@ -1,4 +1,5 @@
 // printer.go: The actual pretty print implementation. Everything in this file should be private.
+// 20250809: support for date.Date types (alias of int64) added
 package pp
 
 import (
@@ -8,24 +9,29 @@ import (
 	"math/big"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/rickb777/date/v2"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 )
 
 const (
-	indentWidth = 2
+	indentWidth      = 2
+	DATE_TYPE_STRING = "date.Date"
 )
 
 func (pp *PrettyPrinter) format(object interface{}) string {
-	return newPrinter(object, &pp.currentScheme, pp.maxDepth, pp.coloringEnabled, pp.decimalUint, pp.exportedOnly, pp.thousandsSeparator, pp.omitEmpty).String()
+	return newPrinter(object, &pp.currentScheme, pp.datePkgFields, pp.maxDepth, pp.coloringEnabled, pp.decimalUint, pp.exportedOnly,
+		pp.thousandsSeparator, pp.omitEmpty).String()
 }
 
-func newPrinter(object interface{}, currentScheme *ColorScheme, maxDepth int, coloringEnabled bool, decimalUint bool, exportedOnly bool, thousandsSeparator bool, omitEmpty bool) *printer {
+func newPrinter(object interface{}, currentScheme *ColorScheme, datePkgFields map[string][]string, maxDepth int, coloringEnabled bool, decimalUint bool,
+	exportedOnly bool, thousandsSeparator bool, omitEmpty bool) *printer {
 	buffer := bytes.NewBufferString("")
 	tw := new(tabwriter.Writer)
 	tw.Init(buffer, indentWidth, 0, 1, ' ', 0)
@@ -36,6 +42,7 @@ func newPrinter(object interface{}, currentScheme *ColorScheme, maxDepth int, co
 		depth:              0,
 		maxDepth:           maxDepth,
 		value:              reflect.ValueOf(object),
+		objType:            reflect.TypeOf(object).String(),
 		visited:            map[uintptr]bool{},
 		currentScheme:      currentScheme,
 		coloringEnabled:    coloringEnabled,
@@ -43,6 +50,7 @@ func newPrinter(object interface{}, currentScheme *ColorScheme, maxDepth int, co
 		exportedOnly:       exportedOnly,
 		thousandsSeparator: thousandsSeparator,
 		omitEmpty:          omitEmpty,
+		datePkgFields:      datePkgFields,
 	}
 
 	if thousandsSeparator {
@@ -57,6 +65,7 @@ type printer struct {
 	tw                 *tabwriter.Writer
 	depth              int
 	maxDepth           int
+	objType            string
 	value              reflect.Value
 	visited            map[uintptr]bool
 	currentScheme      *ColorScheme
@@ -65,45 +74,62 @@ type printer struct {
 	exportedOnly       bool
 	thousandsSeparator bool
 	omitEmpty          bool
+	datePkgFields      map[string][]string
 	localizedPrinter   *message.Printer
 }
 
 func (p *printer) String() string {
-	switch p.value.Kind() {
-	case reflect.Bool:
-		p.colorPrint(p.raw(), p.currentScheme.Bool)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Uintptr, reflect.Complex64, reflect.Complex128:
-		p.colorPrint(p.raw(), p.currentScheme.Integer)
-	case reflect.Float32, reflect.Float64:
-		p.colorPrint(p.raw(), p.currentScheme.Float)
-	case reflect.String:
-		p.printString()
-	case reflect.Map:
-		p.printMap()
-	case reflect.Struct:
-		p.printStruct()
-	case reflect.Array, reflect.Slice:
-		p.printSlice()
-	case reflect.Chan:
-		p.printf("(%s)(%s)", p.typeString(), p.pointerAddr())
-	case reflect.Interface:
-		p.printInterface()
-	case reflect.Ptr:
-		p.printPtr()
-	case reflect.Func:
-		p.printf("%s {...}", p.typeString())
-	case reflect.UnsafePointer:
-		p.printf("%s(%s)", p.typeString(), p.pointerAddr())
-	case reflect.Invalid:
-		p.print(p.nil())
-	default:
-		p.print(p.raw())
+	if p.objType == DATE_TYPE_STRING {
+		p.printDate()
+	} else {
+		switch p.value.Kind() {
+		case reflect.Bool:
+			p.colorPrint(p.raw(), p.currentScheme.Bool)
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+			reflect.Uintptr, reflect.Complex64, reflect.Complex128:
+			p.colorPrint(p.raw(), p.currentScheme.Integer)
+		case reflect.Float32, reflect.Float64:
+			p.colorPrint(p.raw(), p.currentScheme.Float)
+		case reflect.String:
+			p.printString()
+		case reflect.Map:
+			p.printMap()
+		case reflect.Struct:
+			p.printStruct()
+		case reflect.Array, reflect.Slice:
+			p.printSlice()
+		case reflect.Chan:
+			p.printf("(%s)(%s)", p.typeString(), p.pointerAddr())
+		case reflect.Interface:
+			p.printInterface()
+		case reflect.Ptr:
+			p.printPtr()
+		case reflect.Func:
+			p.printf("%s {...}", p.typeString())
+		case reflect.UnsafePointer:
+			p.printf("%s(%s)", p.typeString(), p.pointerAddr())
+		case reflect.Invalid:
+			p.print(p.nil())
+		default:
+			p.print(p.raw())
+		}
 	}
 
 	p.tw.Flush()
 	return p.Buffer.String()
+}
+
+func (p *printer) printDate() {
+	var tm date.Date
+	tm = date.Date(p.value.Int())
+
+	p.printf(
+		"%s-%s-%s",
+		p.colorize(strconv.Itoa(tm.Year()), p.currentScheme.Time),
+		p.colorize(fmt.Sprintf("%02d", tm.Month()), p.currentScheme.Time),
+		p.colorize(fmt.Sprintf("%02d", tm.Day()), p.currentScheme.Time),
+	)
 }
 
 func (p *printer) print(text string) {
@@ -242,7 +268,15 @@ func (p *printer) printStruct() {
 	p.indented(func() {
 		for _, i := range fields {
 			field := p.value.Type().Field(i)
-			value := p.value.Field(i)
+			var isDate bool
+			var value reflect.Value
+			names, exist := p.datePkgFields[field.PkgPath]
+			// assuming that a slices only contains a few field names
+			if exist && slices.Contains(names, field.Name) {
+				isDate = true
+			} else {
+				value = p.value.Field(i)
+			}
 
 			fieldName := field.Name
 			if tag := field.Tag.Get("pp"); tag != "" {
@@ -253,7 +287,13 @@ func (p *printer) printStruct() {
 			}
 
 			colorizedFieldName := p.colorize(fieldName, p.currentScheme.FieldName)
-			p.indentPrintf("%s:\t%s,\n", colorizedFieldName, p.format(value))
+			var formattedVal string
+			if isDate {
+				formattedVal = p.format(date.Date(p.value.Field(i).Int()))
+			} else {
+				formattedVal = p.format(value)
+			}
+			p.indentPrintf("%s:\t%s,\n", colorizedFieldName, formattedVal)
 		}
 	})
 	p.indentPrint("}")
@@ -477,7 +517,7 @@ func (p *printer) colorize(text string, color uint16) string {
 }
 
 func (p *printer) format(object interface{}) string {
-	pp := newPrinter(object, p.currentScheme, p.maxDepth, p.coloringEnabled, p.decimalUint, p.exportedOnly, p.thousandsSeparator, p.omitEmpty)
+	pp := newPrinter(object, p.currentScheme, p.datePkgFields, p.maxDepth, p.coloringEnabled, p.decimalUint, p.exportedOnly, p.thousandsSeparator, p.omitEmpty)
 	pp.depth = p.depth
 	pp.visited = p.visited
 	if value, ok := object.(reflect.Value); ok {

@@ -1,4 +1,5 @@
 // pp.go: API definitions. The core implementation is delegated to printer.go.
+// 20250809: support for date.Date types (alias of int64) added
 package pp
 
 import (
@@ -49,7 +50,9 @@ type PrettyPrinter struct {
 	thousandsSeparator bool
 	// This skips unexported fields of structs.
 	exportedOnly bool
-
+	// Support for date.Date: map[pkgPath],[]fieldNames
+	// e.g. {"mypackage.com/directory":{"dateField1","dateField2"}}
+	datePkgFields map[string][]string
 	// This skips empty fields of structs.
 	omitEmpty bool
 }
@@ -187,6 +190,12 @@ func (pp *PrettyPrinter) ResetOutput() {
 func (pp *PrettyPrinter) SetColorScheme(scheme ColorScheme) {
 	scheme.fixColors()
 	pp.currentScheme = scheme
+}
+
+// Set map of packages paths and field names denoting struct fields to be
+// printed as date.Date strings
+func (pp *PrettyPrinter) SetDatePkgFields(datePkgFields map[string][]string) {
+	pp.datePkgFields = datePkgFields
 }
 
 // ResetColorScheme resets colorscheme to default.
