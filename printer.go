@@ -271,9 +271,12 @@ func (p *printer) printStruct() {
 			var isDate bool
 			var value reflect.Value
 			names, exist := p.datePkgFields[field.PkgPath]
+			recognized := slices.Contains(names, field.Name)
+			//log.Printf("pkg path: [%s] isEmpty [%t] field name: [%s] recognized [%t]", field.PkgPath, field.PkgPath == "", field.Name, recognized)
 			// assuming that a slices only contains a few field names
-			if exist && slices.Contains(names, field.Name) {
+			if (exist || field.PkgPath == "") && recognized {
 				isDate = true
+				//log.Printf("isDate: [%s]", field.Name)
 			} else {
 				value = p.value.Field(i)
 			}
